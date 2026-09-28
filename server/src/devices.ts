@@ -25,6 +25,7 @@ export interface DeviceStatus {
   /** 'connected' while the device is online; unknowable once it is offline. */
   wifi: 'connected' | 'unknown';
   wifi_rssi: number | null;
+  wifi_ssid: string | null;
   ip: string | null;
   remote_address: string | null;
   mac: string | null;
@@ -202,6 +203,7 @@ export class DeviceManager extends EventEmitter<DeviceManagerEvents> {
       recording: false,
       wifi: 'connected',
       wifi_rssi: hello.rssi ?? null,
+      wifi_ssid: hello.ssid ?? null,
       ip: hello.ip ?? remoteAddress,
       remote_address: remoteAddress,
       mac: hello.mac ?? null,
@@ -472,6 +474,7 @@ export class DeviceManager extends EventEmitter<DeviceManagerEvents> {
       recording: false,
       wifi: 'unknown',
       wifi_rssi: null,
+      wifi_ssid: null,
       ip: null,
       remote_address: null,
       mac: null,

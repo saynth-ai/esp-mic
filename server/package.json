@@ -1,6 +1,6 @@
 {
   "name": "esp32-mic-server",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "Receives PCM audio from ESP32 Wi-Fi microphones over WebSocket and records it to WAV files",
   "type": "module",

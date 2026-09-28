@@ -43,6 +43,7 @@ export interface HelloMessage {
   mac?: string;
   firmware?: string;
   rssi?: number;
+  ssid?: string;
   reset_reason?: string;
 }
 
@@ -106,6 +107,7 @@ export function parseControlMessage(raw: Buffer): ControlMessage {
         mac: optStr(msg.mac, 17),
         firmware: optStr(msg.firmware),
         rssi: optNum(msg.rssi),
+        ssid: optStr(msg.ssid, 32),
         reset_reason: optStr(msg.reset_reason),
       };
     }

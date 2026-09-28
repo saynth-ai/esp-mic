@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ESP32 Mic Recorder</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=1.1.1">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='9' y='3' width='6' height='11' rx='3' fill='%230f9d8a'/%3E%3Cpath d='M6 11a6 6 0 0 0 12 0M12 17v4' stroke='%230f9d8a' stroke-width='2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
 </head>
 <body>
@@ -16,8 +16,13 @@
         <p class="sub" id="server-line">Connecting to server…</p>
       </div>
     </div>
-    <div class="link" id="link" data-state="connecting">
-      <span class="dot"></span><span id="link-text">Connecting</span>
+    <div class="top-right">
+      <div class="link" id="link" data-state="connecting">
+        <span class="dot"></span><span id="link-text">Connecting</span>
+      </div>
+      <form method="post" action="/logout" id="logout" hidden>
+        <button type="submit" class="btn ghost">Sign out</button>
+      </form>
     </div>
   </header>
 
@@ -95,7 +100,15 @@
       <header class="section-head">
         <h2>Recordings</h2>
         <span class="muted" id="rec-total"></span>
+        <div class="bulk" id="bulk" hidden>
+          <span id="bulk-text"></span>
+          <button type="button" class="btn danger" id="bulk-delete">Delete selected</button>
+          <button type="button" class="btn danger armed" id="bulk-confirm" hidden>Confirm delete</button>
+          <button type="button" class="btn ghost" id="bulk-cancel">Cancel</button>
+        </div>
       </header>
+
+      <p class="notice" id="rec-alert" role="status" hidden></p>
 
       <div class="player" id="player" hidden>
         <div class="player-meta">
@@ -109,16 +122,16 @@
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>Recording</th><th>Device</th><th>Started</th><th class="num">Duration</th><th class="num">Size</th><th class="actions"></th></tr>
+            <tr><th class="pick"><input type="checkbox" id="pick-all" aria-label="Select all finished recordings"></th><th>Recording</th><th>Device</th><th>Started</th><th class="num">Duration</th><th class="num">Size</th><th class="actions"></th></tr>
           </thead>
           <tbody id="rec-body">
-            <tr class="placeholder"><td colspan="6">No recordings yet.</td></tr>
+            <tr class="placeholder"><td colspan="7">No recordings yet.</td></tr>
           </tbody>
         </table>
       </div>
     </section>
   </main>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=1.1.1"></script>
 </body>
 </html>

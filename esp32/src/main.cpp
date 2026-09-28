@@ -90,6 +90,7 @@ static bool g_wsBegun = false;
 static uint32_t g_wsDownSince = 0;
 static uint32_t g_wsInterval = 0;
 static uint32_t g_helloSentAt = 0;
+static uint32_t g_connectingSince = 0;  // start of the current "trying to connect" phase
 static uint32_t g_lastOnline = 0;  // last time we had a working server link
 static bool g_userPaused = false;
 
@@ -194,9 +195,9 @@ static void sendHello() {
   snprintf(buf, sizeof(buf),
            "{\"type\":\"hello\",\"device_id\":\"%s\",\"sample_rate\":%d,\"bits\":16,\"channels\":1,"
            "\"format\":\"%s\",\"frame_samples\":%d,\"firmware\":\"%s\",\"ip\":\"%s\",\"mac\":\"%s\","
-           "\"rssi\":%d,\"reset_reason\":\"%s\"}",
+           "\"rssi\":%d,\"ssid\":\"%s\",\"reset_reason\":\"%s\"}",
            DEVICE_ID, AUDIO_SAMPLE_RATE, WIRE_FORMAT, AUDIO_FRAME_SAMPLES, FIRMWARE_VERSION, WiFi.localIP().toString().c_str(),
-           WiFi.macAddress().c_str(), WiFi.RSSI(), resetReasonName());
+           WiFi.macAddress().c_str(), WiFi.RSSI(), WiFi.SSID().c_str(), resetReasonName());
   wsSendText(buf);
 }
 
@@ -241,6 +242,7 @@ static void stopStreaming(bool tellServer) {
 // (up to AUDIO_BUFFER_MS) and is sent after the reconnect.
 static void markServerDown() {
   if (g_link == Link::AwaitWelcome || g_link == Link::Streaming) g_wsDownSince = millis();
+  g_connectingSince = millis();
   g_link = g_wifiUp ? Link::WsConnecting : Link::WifiDown;
 }
 
@@ -323,6 +325,7 @@ static void wsUpdateBackoff(uint32_t now) {
 static void onWifiUp() {
   LOG("Wi-Fi connected: IP %s, RSSI %d dBm", WiFi.localIP().toString().c_str(), WiFi.RSSI());
   g_wsDownSince = millis();
+  g_connectingSince = millis();
   g_wsInterval = 0;
   g_link = Link::WsConnecting;
   wsBeginOnce();  // afterwards the library reconnects by itself as long as loop() runs
@@ -332,6 +335,56 @@ static void onWifiDown() {
   LOG("Wi-Fi lost");
   if (g_ws.isConnected()) g_ws.disconnect();
   g_link = Link::WifiDown;  // capture keeps filling the buffer until Wi-Fi returns
+}
+
+// Known networks: WIFI_SSID plus optional WIFI_SSID_2 / WIFI_SSID_3 (with passwords).
+// Before each attempt the strongest visible one is chosen; if none is visible
+// the list is tried in turn.
+struct WifiNet {
+  const char *ssid;
+  const char *pass;
+};
+static const WifiNet kNets[] = {
+    {WIFI_SSID, WIFI_PASSWORD},
+#ifdef WIFI_SSID_2
+    {WIFI_SSID_2, WIFI_PASSWORD_2},
+#endif
+#ifdef WIFI_SSID_3
+    {WIFI_SSID_3, WIFI_PASSWORD_3},
+#endif
+};
+static constexpr size_t kNetCount = sizeof(kNets) / sizeof(kNets[0]);
+static size_t g_netRotate = 0;
+
+static bool isKnownSsid(const String &ssid) {
+  for (const WifiNet &n : kNets)
+    if (ssid == n.ssid) return true;
+  return false;
+}
+
+// Strongest known network in range, or the next one in turn if none is seen.
+static const WifiNet &pickNetwork() {
+  if (kNetCount == 1) return kNets[0];
+  esp_task_wdt_reset();
+  int found = WiFi.scanNetworks(false, true);  // blocking, ~2 s
+  esp_task_wdt_reset();
+  int best = -1, bestRssi = -1000;
+  for (int i = 0; i < found; i++) {
+    for (size_t k = 0; k < kNetCount; k++) {
+      if (WiFi.SSID(i) == kNets[k].ssid && WiFi.RSSI(i) > bestRssi) {
+        best = (int)k;
+        bestRssi = WiFi.RSSI(i);
+      }
+    }
+  }
+  WiFi.scanDelete();
+  if (best >= 0) {
+    LOG("Wi-Fi: \"%s\" is the strongest known network (%d dBm)", kNets[best].ssid, bestRssi);
+    return kNets[best];
+  }
+  const WifiNet &n = kNets[g_netRotate++ % kNetCount];
+  LOG("Wi-Fi: no known network visible, trying \"%s\"", n.ssid);
+  return n;
 }
 
 // Diagnostics: the driver's reason for every failed association / drop.
@@ -374,12 +427,12 @@ static void logWifiScan() {
   bool found = false;
   LOG("Wi-Fi scan: %d network(s) visible", n);
   for (int i = 0; i < n && i < 20; i++) {
-    bool match = WiFi.SSID(i) == WIFI_SSID;
+    bool match = isKnownSsid(WiFi.SSID(i));
     found |= match;
     LOG("  %s\"%s\" ch%d %d dBm %s %s", match ? "-> " : "   ", WiFi.SSID(i).c_str(), (int)WiFi.channel(i),
         (int)WiFi.RSSI(i), authName(WiFi.encryptionType(i)), WiFi.BSSIDstr(i).c_str());
   }
-  if (!found) LOG("  \"%s\" not seen: out of range, 5 GHz-only, or hidden", WIFI_SSID);
+  if (!found) LOG("  no known network seen: out of range, 5 GHz-only, or hidden");
   WiFi.scanDelete();
 #endif
 }
@@ -415,14 +468,15 @@ static void wifiTick(uint32_t now) {
   }
 
   if ((int32_t)(now - g_wifiNextAttempt) >= 0) {
-    LOG("Wi-Fi connecting to \"%s\"", WIFI_SSID);
     WiFi.disconnect();
-    // An empty WIFI_PASSWORD means an open network; allow joining it.
-    if (WIFI_PASSWORD[0] == '\0') WiFi.setMinSecurity(WIFI_AUTH_OPEN);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    const WifiNet &net = pickNetwork();
+    LOG("Wi-Fi connecting to \"%s\"", net.ssid);
+    // An empty password means an open network; allow joining it.
+    WiFi.setMinSecurity(net.pass[0] == '\0' ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK);
+    WiFi.begin(net.ssid, net.pass);
     WiFi.setTxPower(WIFI_TX_POWER);  // must follow begin(): the driver resets it on start
     g_wifiConnecting = true;
-    g_wifiAttemptStart = now;
+    g_wifiAttemptStart = millis();  // the scan above may have taken a few seconds
   }
 }
 
@@ -455,6 +509,12 @@ static void healthTick(uint32_t now) {
 
   if (g_link == Link::Streaming) g_lastOnline = now;
   if (OFFLINE_REBOOT_MS > 0 && now - g_lastOnline > OFFLINE_REBOOT_MS) gracefulReboot("no server connection for too long");
+  // Wi-Fi is fine but every connection attempt fails (e.g. TLS can no longer allocate
+  // its buffers on a fragmented heap): a clean restart reliably recovers.
+  if (SERVER_OFFLINE_REBOOT_MS > 0 && g_wifiUp && g_link == Link::WsConnecting &&
+      (int32_t)(now - g_wsDownSince) > (int32_t)SERVER_OFFLINE_REBOOT_MS) {
+    gracefulReboot("server unreachable while Wi-Fi is up");
+  }
 }
 
 static void buttonTick(uint32_t now) {
@@ -579,7 +639,19 @@ void loop() {
     // and `now - later` would wrap to ~4.29e9 and fire every timeout instantly.
     const uint32_t afterWs = millis();
 
-    if (g_link == Link::WsConnecting) wsUpdateBackoff(afterWs);
+    if (g_link == Link::WsConnecting) {
+      wsUpdateBackoff(afterWs);
+      // The WebSockets library has no timeout while waiting for the upgrade reply: if
+      // the TLS connection opened but the server never completes the handshake (e.g. it
+      // was restarting behind nginx/Cloudflare), it waits forever on a socket that still
+      // reports "connected". Force a fresh attempt when nothing happened for a while.
+      if ((int32_t)(afterWs - g_connectingSince) > (int32_t)(g_wsInterval + WS_CONNECT_STUCK_MS)) {
+        LOG("No WebSocket connection after %lu s, resetting the attempt",
+            (unsigned long)((afterWs - g_connectingSince) / 1000));
+        g_ws.disconnect();
+        g_connectingSince = millis();
+      }
+    }
 
     if (g_link == Link::AwaitWelcome && (int32_t)(afterWs - g_helloSentAt) > (int32_t)WS_HANDSHAKE_TIMEOUT_MS) {
       LOG("No welcome from server within %d ms, reconnecting", WS_HANDSHAKE_TIMEOUT_MS);
@@ -628,10 +700,16 @@ void loop() {
   static uint32_t lastStats = 0;
   if (now - lastStats >= 10000) {
     lastStats = now;
-    LOG("stats: link=%d frames=%lu dropped=%luB i2s_err=%lu i2s_restarts=%lu send_fail=%lu heap=%u gain=%.1fdB",
+    LOG("stats: link=%d frames=%lu dropped=%luB i2s_err=%lu i2s_restarts=%lu send_fail=%lu heap=%u max_block=%u gain=%.1fdB",
         (int)g_link, (unsigned long)g_framesSent, (unsigned long)g_droppedBytes, (unsigned long)g_i2sErrors,
         (unsigned long)g_i2sRestarts, (unsigned long)g_sendFailures, (unsigned)ESP.getFreeHeap(),
-        20.0f * log10f(micGain()));
+        (unsigned)ESP.getMaxAllocHeap(), 20.0f * log10f(micGain()));
+    if (g_link == Link::WsConnecting) {
+      // Diagnose failed reconnects: can we still resolve the server?
+      IPAddress ip;
+      int ok = WiFi.hostByName(SERVER_HOST, ip);
+      LOG("diag: DNS %s -> %s (ok=%d), RSSI %d", SERVER_HOST, ip.toString().c_str(), ok, WiFi.RSSI());
+    }
   }
 #endif
 

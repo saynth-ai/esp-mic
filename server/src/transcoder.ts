@@ -25,6 +25,8 @@ export function mp3PathFor(wavPath: string): string {
 export class Mp3Transcoder {
   private queue: Promise<void> = Promise.resolve();
   private pending = 0;
+  /** WAV paths queued or being converted. */
+  private readonly inQueue = new Set<string>();
   private stopped = false;
   private current: ReturnType<typeof spawn> | null = null;
 
@@ -49,14 +51,23 @@ export class Mp3Transcoder {
   }
 
   /** Queue a WAV for conversion. Resolves with the MP3 path, or null if it failed. */
+  /** True while `wavPath` is waiting for or undergoing conversion. */
+  isQueued(wavPath: string): boolean {
+    return this.inQueue.has(wavPath);
+  }
+
   enqueue(wavPath: string): Promise<string | null> {
     this.pending++;
+    this.inQueue.add(wavPath);
     const job = this.queue.then(() => (this.stopped ? null : this.convert(wavPath)));
     this.queue = job.then(
       () => undefined,
       () => undefined,
     );
-    return job.finally(() => this.pending--);
+    return job.finally(() => {
+      this.pending--;
+      this.inQueue.delete(wavPath);
+    });
   }
 
   /** Resolves when everything queued so far has been processed. */

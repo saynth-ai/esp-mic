@@ -118,7 +118,7 @@ function renderDevice() {
   setText('dev-status', d.connected ? 'CONNECTED' : 'DISCONNECTED', d.connected ? 'state-ok' : 'state-bad');
   setText('dev-ip', d.ip || '—');
   if (d.connected) {
-    setText('dev-wifi', `CONNECTED${d.wifi_rssi != null ? ` · ${d.wifi_rssi} dBm` : ''}`, 'state-ok');
+    setText('dev-wifi', `CONNECTED${d.wifi_ssid ? ` · ${d.wifi_ssid}` : ''}${d.wifi_rssi != null ? ` · ${d.wifi_rssi} dBm` : ''}`, 'state-ok');
   } else {
     setText('dev-wifi', 'UNKNOWN (device offline)', 'muted');
   }
@@ -208,10 +208,12 @@ function renderRecordings() {
     const tr = document.createElement('tr');
     tr.className = 'placeholder';
     const td = document.createElement('td');
-    td.colSpan = 6;
+    td.colSpan = 7;
     td.textContent = 'No recordings yet. They appear automatically when a microphone streams audio.';
     tr.append(td);
     body.replaceChildren(tr);
+    selected.clear();
+    renderBulk();
     return;
   }
 
@@ -219,11 +221,33 @@ function renderRecordings() {
   const live = new Map();
   for (const d of state.devices.values()) if (d.current_recording) live.set(d.current_recording, d);
 
+  // Forget selections for files that no longer exist or are being recorded.
+  const deletable = new Set(state.recordings.filter((r) => !r.active && !live.has(r.filename)).map((r) => r.filename));
+  for (const f of [...selected]) if (!deletable.has(f)) selected.delete(f);
+
   body.replaceChildren(
     ...state.recordings.map((r) => {
       const tr = document.createElement('tr');
-      if (state.playing === r.filename) tr.className = 'playing';
       const liveDev = live.get(r.filename);
+      const canDelete = deletable.has(r.filename);
+      tr.className = [state.playing === r.filename && 'playing', selected.has(r.filename) && 'selected'].filter(Boolean).join(' ');
+
+      const pick = document.createElement('td');
+      pick.className = 'pick';
+      if (canDelete) {
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = selected.has(r.filename);
+        cb.dataset.filename = r.filename;
+        cb.setAttribute('aria-label', `Select ${r.filename}`);
+        cb.addEventListener('change', () => {
+          if (cb.checked) selected.add(r.filename);
+          else selected.delete(r.filename);
+          disarmBulk();
+          renderRecordings();
+        });
+        pick.append(cb);
+      }
 
       const name = document.createElement('td');
       name.className = 'name';
@@ -263,8 +287,10 @@ function renderRecordings() {
       dl.setAttribute('download', r.filename);
       dl.textContent = '↓ Download';
       actions.append(play, dl);
+      if (!r.active && !liveDev) actions.append(deleteButton(r.filename, url));
 
       tr.append(
+        pick,
         name,
         cell(r.device_id || '—', 'mono'),
         cell(dateTimeOf(r.started_at)),
@@ -275,7 +301,154 @@ function renderRecordings() {
       return tr;
     }),
   );
+  renderBulk();
 }
+
+// Two-step delete: the first click arms the button for 4 s, the second deletes.
+const armedDeletes = new Map(); // filename → timeout id
+
+function deleteButton(filename, url) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  const armed = armedDeletes.has(filename);
+  b.className = `btn danger${armed ? ' armed' : ''}`;
+  b.textContent = armed ? 'Confirm?' : 'Delete';
+  b.title = armed ? `Permanently delete ${filename}` : 'Delete this recording';
+  b.addEventListener('click', async () => {
+    if (!armedDeletes.has(filename)) {
+      armedDeletes.set(filename, setTimeout(() => {
+        armedDeletes.delete(filename);
+        renderRecordings();
+      }, 4000));
+      renderRecordings();
+      return;
+    }
+    clearTimeout(armedDeletes.get(filename));
+    armedDeletes.delete(filename);
+    b.disabled = true;
+    b.textContent = 'Deleting…';
+    try {
+      const res = await fetch(url, { method: 'DELETE' });
+      if (res.status === 401) {
+        location.href = '/login';
+        return;
+      }
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      if (state.playing === filename) closePlayer();
+      // Remove locally right away; the server also pushes the updated list to every dashboard.
+      state.recordings = state.recordings.filter((r) => r.filename !== filename);
+      state.totalRecordings = Math.max(0, state.totalRecordings - 1);
+      alertBar(`Deleted ${filename} · ${state.totalRecordings} remaining.`, 'ok');
+      renderRecordings();
+    } catch (err) {
+      b.disabled = false;
+      b.textContent = 'Delete';
+      alertBar(`Could not delete ${filename}: ${err.message}`);
+    }
+  });
+  return b;
+}
+
+function alertBar(text, kind = 'warn') {
+  const el = $('rec-alert');
+  el.textContent = text;
+  el.className = kind === 'ok' ? 'notice' : 'warn';
+  el.hidden = false;
+  clearTimeout(alertBar.t);
+  alertBar.t = setTimeout(() => (el.hidden = true), 6000);
+}
+
+// ------------------------------------------------------------ multi-select delete
+
+const selected = new Set();
+let bulkTimer = null;
+
+function renderBulk() {
+  const n = selected.size;
+  $('bulk').hidden = n === 0;
+  const armed = bulkTimer !== null;
+  const shownNote = state.totalRecordings > state.recordings.length ? ` (of ${state.totalRecordings} total)` : '';
+  $('bulk-text').textContent = armed
+    ? `Permanently delete ${n} recording${n === 1 ? '' : 's'}${shownNote}? This cannot be undone.`
+    : `${n} selected${shownNote}`;
+  $('bulk-delete').hidden = armed;
+  $('bulk-delete').textContent = `Delete selected (${n})`;
+  $('bulk-confirm').hidden = !armed;
+  const boxes = [...document.querySelectorAll('#rec-body td.pick input')];
+  const all = $('pick-all');
+  all.disabled = boxes.length === 0;
+  all.checked = boxes.length > 0 && boxes.every((b) => b.checked);
+  all.indeterminate = !all.checked && boxes.some((b) => b.checked);
+}
+
+function disarmBulk() {
+  if (bulkTimer) clearTimeout(bulkTimer);
+  bulkTimer = null;
+}
+
+$('pick-all').addEventListener('change', (e) => {
+  for (const cb of document.querySelectorAll('#rec-body td.pick input')) {
+    if (e.target.checked) selected.add(cb.dataset.filename);
+    else selected.delete(cb.dataset.filename);
+  }
+  disarmBulk();
+  renderRecordings();
+});
+
+// Step 1: ask for confirmation (auto-cancels after 8 s).
+$('bulk-delete').addEventListener('click', () => {
+  if (selected.size === 0) return;
+  bulkTimer = setTimeout(() => {
+    bulkTimer = null;
+    renderBulk();
+  }, 8000);
+  renderBulk();
+});
+
+$('bulk-cancel').addEventListener('click', () => {
+  disarmBulk();
+  selected.clear();
+  renderRecordings();
+});
+
+// Step 2: delete everything selected in one request.
+$('bulk-confirm').addEventListener('click', async () => {
+  disarmBulk();
+  const filenames = [...selected];
+  $('bulk-confirm').disabled = true;
+  try {
+    const res = await fetch('/recordings/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filenames }),
+    });
+    if (res.status === 401) {
+      location.href = '/login';
+      return;
+    }
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+    for (const f of body.deleted) selected.delete(f);
+    if (body.deleted.includes(state.playing)) closePlayer();
+    const gone = new Set(body.deleted);
+    state.recordings = state.recordings.filter((r) => !gone.has(r.filename));
+    state.totalRecordings = Math.max(0, state.totalRecordings - body.deleted.length);
+    const n = body.deleted.length;
+    let msg = `Deleted ${n} recording${n === 1 ? '' : 's'} · ${state.totalRecordings} remaining.`;
+    if (body.failed.length) {
+      msg += ` ${body.failed.length} skipped: ${body.failed.map((f) => `${f.filename} (${f.error})`).join(', ')}`;
+    }
+    alertBar(msg, body.failed.length ? 'warn' : 'ok');
+  } catch (err) {
+    alertBar(`Could not delete: ${err.message}`);
+  } finally {
+    $('bulk-confirm').disabled = false;
+    renderRecordings();
+  }
+});
 
 function playRecording(filename, url) {
   stopLive();
@@ -453,6 +626,7 @@ function connect() {
     switch (msg.type) {
       case 'snapshot':
         state.server = { ...msg.server, receivedAt: Date.now() };
+        $('logout').hidden = state.server.auth !== 'login';
         state.devices = new Map(msg.devices.map((d) => [d.device_id, d]));
         state.recordings = msg.recordings;
         state.totalRecordings = msg.total;
@@ -477,7 +651,17 @@ function connect() {
     }
   });
 
-  socket.addEventListener('close', () => {
+  socket.addEventListener('close', async () => {
+    // A closed socket may mean the session expired: go to the login page if so.
+    try {
+      const r = await fetch('/api/devices', { cache: 'no-store' });
+      if (r.status === 401) {
+        location.href = '/login';
+        return;
+      }
+    } catch {
+      /* server unreachable: keep retrying */
+    }
     const delay = RETRY_DELAYS[Math.min(retry++, RETRY_DELAYS.length - 1)];
     setLink('down', `Reconnecting in ${delay / 1000}s`);
     setTimeout(connect, delay);

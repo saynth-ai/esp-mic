@@ -26,6 +26,8 @@
 #ifndef WIFI_PASSWORD
 #define WIFI_PASSWORD "your-wifi-password"
 #endif
+// Optional extra networks (define in secrets.h): the strongest known one in range
+// is joined. #define WIFI_SSID_2 "..." / WIFI_PASSWORD_2 "...", same for _3.
 
 // Wi-Fi transmit power. Lower it (e.g. WIFI_POWER_8_5dBm) on boards whose 3.3 V
 // regulator browns out during transmit bursts. Values: WIFI_POWER_19_5dBm (max) … WIFI_POWER_2dBm
@@ -50,8 +52,13 @@
 #ifndef SERVER_USE_TLS
 #define SERVER_USE_TLS 0
 #endif
-// PEM of the CA that signed the server certificate (only used when SERVER_USE_TLS=1).
-// #define SERVER_ROOT_CA "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n"
+// PEM of the CA(s) that signed the server certificate (only used when SERVER_USE_TLS=1).
+// Defaults to the public roots in ca_roots.h, which cover Cloudflare-proxied hosts
+// (Google Trust Services, GlobalSign, Let's Encrypt).
+#if SERVER_USE_TLS && !defined(SERVER_ROOT_CA)
+#include "ca_roots.h"
+#define SERVER_ROOT_CA kPublicRootCAs
+#endif
 
 // ------------------------------------------------------------ INMP441 / I2S
 #ifndef I2S_BCLK
@@ -87,11 +94,11 @@
 
 // RAM ring buffer between the I2S task and the network. Audio captured while the
 // link is slow or reconnecting waits here and is sent afterwards; only an outage
-// longer than this loses audio (the newest frames are dropped). With ADPCM the same
-// RAM holds 4x longer: 10 s ≈ 80 KB; raw PCM 3 s ≈ 94 KB.
+// longer than this loses audio (the newest frames are dropped). ADPCM: 6 s ≈ 48 KB;
+// raw PCM 3 s ≈ 94 KB. With SERVER_USE_TLS keep ≥ ~80 KB heap free for TLS.
 #ifndef AUDIO_BUFFER_MS
 #if AUDIO_CODEC_ADPCM
-#define AUDIO_BUFFER_MS 10000
+#define AUDIO_BUFFER_MS 6000               // ~48 KB: leaves room for TLS (wss) buffers
 #else
 #define AUDIO_BUFFER_MS 3000
 #endif
@@ -148,6 +155,12 @@
 #endif
 #ifndef OFFLINE_REBOOT_MS
 #define OFFLINE_REBOOT_MS (15UL * 60UL * 1000UL)   // no server link this long → reboot (0 = never)
+#endif
+#ifndef SERVER_OFFLINE_REBOOT_MS
+#define SERVER_OFFLINE_REBOOT_MS 120000    // Wi-Fi up but server unreachable this long → clean reboot (0 = never)
+#endif
+#ifndef WS_CONNECT_STUCK_MS
+#define WS_CONNECT_STUCK_MS 15000          // connecting longer than retry interval + this → reset the attempt
 #endif
 #ifndef WS_SEND_STALL_MS
 #define WS_SEND_STALL_MS 2000              // one frame taking longer than this = link stalled → reconnect

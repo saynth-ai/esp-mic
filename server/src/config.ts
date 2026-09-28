@@ -44,6 +44,8 @@ export interface Config {
   /** Browsers listen to a device's live audio here: <livePath>?device=<id> */
   livePath: string;
   logLevel: LogLevel;
+  /** Dashboard login. Null password = no login (development only). */
+  admin: { user: string; password: string | null; sessionSecret: string; sessionTtlMs: number };
 }
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -137,6 +139,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     dashboardPath: '/ws', // public/app.js connects here
     livePath: '/ws/live',
     logLevel,
+    admin: {
+      user: env.ADMIN_USER?.trim() || 'admin',
+      password: env.ADMIN_PASSWORD ? env.ADMIN_PASSWORD : null,
+      sessionSecret: env.SESSION_SECRET?.trim() || '',
+      sessionTtlMs: int(env, 'SESSION_TTL_HOURS', 168, 1, 24 * 365) * 3600 * 1000,
+    },
   };
 
   if (config.devicePath === config.dashboardPath || config.devicePath === config.livePath) {
@@ -153,5 +161,8 @@ export function configWarnings(config: Config): string[] {
     else if (t.length < 16) warnings.push('DEVICE_TOKEN is shorter than 16 characters — use a longer random secret');
   }
   if (config.corsOrigins === '*') warnings.push('CORS_ORIGINS=* allows any website to read the API');
+  if (!config.admin.password) warnings.push('ADMIN_PASSWORD is not set — the dashboard and recordings are open to anyone who can reach this server');
+  else if (config.admin.password.length < 12) warnings.push('ADMIN_PASSWORD is shorter than 12 characters');
+  if (config.admin.password && !config.admin.sessionSecret) warnings.push('SESSION_SECRET is not set — set a random value so session cookies cannot be forged by anyone who learns the password hash');
   return warnings;
 }

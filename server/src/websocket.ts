@@ -2,6 +2,7 @@ import type { IncomingMessage, Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import { ADPCM_FORMAT, decodeAdpcmBlock } from './adpcm.js';
+import type { AdminAuth } from './admin.js';
 import { isValidDeviceToken, tokenFromRequest } from './auth.js';
 import type { Config } from './config.js';
 import { isOriginAllowed, originOf } from './cors.js';
@@ -22,6 +23,8 @@ export interface WebSocketDeps {
   log: Logger;
   devices: DeviceManager;
   store: RecordingStore;
+  /** Dashboard login; null = open. */
+  admin: AdminAuth | null;
   serverInfo: () => object;
 }
 
@@ -49,9 +52,15 @@ function describeClose(code: number, reason: Buffer): string {
 }
 
 export function remoteAddress(req: IncomingMessage, trustProxy: boolean): string | null {
-  const fwd = req.headers['x-forwarded-for'];
-  const raw =
-    trustProxy && typeof fwd === 'string' && fwd.trim() ? fwd.split(',')[0]!.trim() : (req.socket.remoteAddress ?? null);
+  let raw: string | null = req.socket.remoteAddress ?? null;
+  if (trustProxy) {
+    // Cloudflare's own header can't be supplied by the client; X-Forwarded-For's
+    // first entry can, so it is only the fallback.
+    const cf = req.headers['cf-connecting-ip'];
+    const fwd = req.headers['x-forwarded-for'];
+    if (typeof cf === 'string' && cf.trim()) raw = cf.trim();
+    else if (typeof fwd === 'string' && fwd.trim()) raw = fwd.split(',')[0]!.trim();
+  }
   return raw?.startsWith('::ffff:') ? raw.slice(7) : raw;
 }
 
@@ -74,27 +83,28 @@ export function attachWebSockets(server: Server, deps: WebSocketDeps): WebSocket
     }
 
     if (pathname === config.devicePath) {
+      // Devices authenticate with their token, never with the dashboard login.
       if (!isValidDeviceToken(tokenFromRequest(req), config.deviceTokens)) {
         log.warn(`Rejected device connection from ${remoteAddress(req, config.trustProxy)}: invalid or missing token`);
         return rejectUpgrade(socket, 401, 'Unauthorized');
       }
       deviceWss.handleUpgrade(req, socket, head, (ws) => onDevice(ws, req));
-    } else if (pathname === config.dashboardPath) {
-      if (!isOriginAllowed(originOf(req), req.headers.host, config)) {
-        log.warn(`Rejected dashboard connection from origin ${originOf(req)}`);
-        return rejectUpgrade(socket, 403, 'Forbidden');
-      }
+      return;
+    }
+
+    if (pathname !== config.dashboardPath && pathname !== config.livePath) return rejectUpgrade(socket, 404, 'Not Found');
+    if (deps.admin && !deps.admin.verifyRequest(req)) return rejectUpgrade(socket, 401, 'Unauthorized');
+    if (!isOriginAllowed(originOf(req), req.headers.host, config)) {
+      log.warn(`Rejected browser WebSocket from origin ${originOf(req)}`);
+      return rejectUpgrade(socket, 403, 'Forbidden');
+    }
+
+    if (pathname === config.dashboardPath) {
       dashWss.handleUpgrade(req, socket, head, (ws) => onDashboard(ws));
-    } else if (pathname === config.livePath) {
-      if (!isOriginAllowed(originOf(req), req.headers.host, config)) {
-        log.warn(`Rejected live-audio connection from origin ${originOf(req)}`);
-        return rejectUpgrade(socket, 403, 'Forbidden');
-      }
+    } else {
       const deviceId = new URL(req.url ?? '/', 'http://localhost').searchParams.get('device') ?? '';
       if (!DEVICE_ID_PATTERN.test(deviceId)) return rejectUpgrade(socket, 400, 'Bad Request');
       liveWss.handleUpgrade(req, socket, head, (ws) => onLiveListener(ws, deviceId));
-    } else {
-      rejectUpgrade(socket, 404, 'Not Found');
     }
   });
 

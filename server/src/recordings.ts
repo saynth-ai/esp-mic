@@ -109,6 +109,24 @@ export class RecordingStore {
       .map((n) => path.join(this.dir, n));
   }
 
+  isActive(filename: string): boolean {
+    return this.active.has(filename);
+  }
+
+  /** Delete a finished recording. Returns false if it didn't exist. */
+  async remove(filename: string): Promise<boolean> {
+    const full = resolveRecordingPath(this.dir, filename);
+    if (!full) return false;
+    try {
+      await rm(full);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw err;
+    }
+    this.cache.delete(filename);
+    return true;
+  }
+
   setActive(filename: string, active: boolean): void {
     if (active) this.active.add(filename);
     else this.active.delete(filename);

@@ -1,0 +1,27 @@
+# Production stack for live.patoari.com
+#
+#   Cloudflare (HTTPS/WSS) → nginx on the host (:80) → this container (127.0.0.1:8095)
+#
+# The image is loaded from the shipped tarball (docker load), not built here.
+services:
+  mic-server:
+    image: esp32-mic-server:1.1.0
+    container_name: esp32-mic-server
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      RECORDINGS_DIR: /app/recordings
+      HOST: 0.0.0.0
+      PORT: "8080"
+    ports:
+      # Only nginx on this host may reach the app; never publish it on 0.0.0.0.
+      - "127.0.0.1:8095:8080"
+    volumes:
+      - ./recordings:/app/recordings
+    user: "1000:1000"
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"

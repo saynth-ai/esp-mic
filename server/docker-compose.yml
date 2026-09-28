@@ -1,7 +1,7 @@
 services:
   mic-server:
     build: .
-    image: esp32-mic-server:1.0.0
+    image: esp32-mic-server:1.1.0
     container_name: esp32-mic-server
     restart: unless-stopped
     env_file: .env

@@ -218,3 +218,35 @@ tr.placeholder td { text-align: center; color: var(--muted); padding: 28px; }
 .live .btn.listening { background: var(--bad); border-color: var(--bad); }
 .live-meter { margin-top: 10px; }
 .live-meter span { transition: width 0.08s linear; }
+
+/* ---------- login ---------- */
+
+.top-right { display: flex; align-items: center; gap: 12px; }
+.login-body { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
+.login { width: min(360px, 100%); display: flex; flex-direction: column; gap: 14px; }
+.login h1 { font-size: 18px; }
+.login p { margin: 0; }
+.login label { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 13px; }
+.login input {
+  font: inherit; color: var(--text); background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px;
+}
+.login input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.login .btn { justify-content: center; padding: 9px; font-size: 14px; }
+
+/* ---------- delete ---------- */
+
+.btn.danger { color: var(--bad); }
+.btn.danger:hover { border-color: var(--bad); color: var(--bad); }
+.btn.danger.armed { background: var(--bad); border-color: var(--bad); color: #fff; }
+#rec-alert { margin: 0 0 12px; }
+
+/* ---------- bulk selection ---------- */
+
+.bulk { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+.bulk #bulk-text { color: var(--muted); font-size: 13px; }
+th.pick, td.pick { width: 36px; padding-right: 0; }
+td.pick input, th.pick input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+tr.selected { background: var(--accent-soft); }
+
+.notice { margin: 0 0 12px; padding: 8px 10px; border-radius: 8px; background: var(--ok-soft); color: var(--ok); font-size: 12.5px; }

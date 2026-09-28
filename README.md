@@ -131,6 +131,9 @@ Wiring summary (INMP441 → ESP32): VDD→3V3, GND→GND, L/R→GND, SCK→GPIO2
 | Variable | Default | Description |
 |---|---|---|
 | `DEVICE_TOKEN` | *(required)* | Shared device secret. Comma-separate several to rotate. |
+| `ADMIN_USER` / `ADMIN_PASSWORD` | `admin` / *(empty)* | Fixed dashboard login. Empty password = no login (development only) |
+| `SESSION_SECRET` | *(empty)* | Random secret that signs session cookies |
+| `SESSION_TTL_HOURS` | `168` | How long a login lasts |
 | `HOST` / `PORT` | `0.0.0.0` / `8080` | Listen address |
 | `RECORDINGS_DIR` | `./recordings` | Only directory files are written to or served from |
 | `TZ` | system | Timezone for filenames |
@@ -226,7 +229,8 @@ Server → dashboard (`/ws`) messages: `snapshot` on connect, then `status`
 
 | Route | Description |
 |---|---|
-| `GET /` | Dashboard |
+| `GET /` | Dashboard (login required when `ADMIN_PASSWORD` is set) |
+| `GET /login`, `POST /login`, `POST /logout` | Admin sign-in / sign-out |
 | `GET /api/health` | `{"status":"ok","uptime":12345,"devices_connected":1,"recordings":42,"version":"1.0.0"}` |
 | `GET /api/devices` | All devices seen since startup, with their live state |
 | `GET /api/devices/:id` | One device |
@@ -261,7 +265,7 @@ cd server
 npm test
 ```
 
-48 tests run the real server (HTTP, both WebSockets, real files) against
+59 tests run the real server (HTTP, both WebSockets, real files) against
 simulated devices. They cover every acceptance scenario:
 
 | # | Scenario | Test |
@@ -282,6 +286,12 @@ rollover, format rejection, audio before hello, hello timeout, odd frames,
 duplicate `device_id`, path traversal, CORS on the dashboard socket, crash
 header repair, write-error handling, and MP3 conversion (live WAV → MP3,
 leftover conversion after a crash, encoder missing → WAV fallback).
+
+## Production deployment
+
+See [`deploy/DEPLOY.md`](deploy/DEPLOY.md): Docker image tarball, production compose
+file, nginx site config for a Cloudflare-proxied domain, and `wss://` device setup
+(the firmware ships the public root CAs in `esp32/include/ca_roots.h`).
 
 ## Troubleshooting
 
@@ -332,10 +342,10 @@ set `TRUST_PROXY=true` behind a proxy.
 - Plain `ws://` sends audio and the token unencrypted over your LAN. For
   anything beyond a trusted LAN, put the server behind a TLS proxy
   (Caddy, nginx) and build the firmware with `SERVER_USE_TLS 1` and `SERVER_ROOT_CA`.
-- **The dashboard and recordings have no login in this version.** Anyone who can
-  reach port 8080 can listen to the recordings. Keep it on a trusted network,
-  or put it behind a proxy with authentication (e.g. Caddy `basic_auth`, or an
-  SSO proxy).
+- **Dashboard login:** set `ADMIN_PASSWORD` (and `SESSION_SECRET`). The dashboard,
+  API, recordings and browser WebSockets then require a signed, HttpOnly session
+  cookie; 10 failed logins per IP block logins for 15 minutes. Devices keep using
+  `DEVICE_TOKEN`. Without `ADMIN_PASSWORD` the server logs a warning and stays open.
 - Responses carry a strict CSP (`default-src 'self'`), `nosniff` and `X-Frame-Options: DENY`.
   CORS is off unless `CORS_ORIGINS` is set.
 
