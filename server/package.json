@@ -1,0 +1,29 @@
+{
+  "name": "esp32-mic-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Receives PCM audio from ESP32 Wi-Fi microphones over WebSocket and records it to WAV files",
+  "type": "module",
+  "engines": {
+    "node": ">=20.12"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/src/server.js",
+    "dev": "tsx watch src/server.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test --test-concurrency=1 test/*.test.ts",
+    "simulate": "tsx tools/simulate-device.ts"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^22.18.0",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}

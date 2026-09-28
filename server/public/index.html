@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ESP32 Mic Recorder</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='9' y='3' width='6' height='11' rx='3' fill='%230f9d8a'/%3E%3Cpath d='M6 11a6 6 0 0 0 12 0M12 17v4' stroke='%230f9d8a' stroke-width='2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4"/></svg>
+      <div>
+        <h1>ESP32 Mic Recorder</h1>
+        <p class="sub" id="server-line">Connecting to server…</p>
+      </div>
+    </div>
+    <div class="link" id="link" data-state="connecting">
+      <span class="dot"></span><span id="link-text">Connecting</span>
+    </div>
+  </header>
+
+  <main>
+    <nav class="devices" id="device-tabs" aria-label="Devices"></nav>
+
+    <section class="empty" id="empty" hidden>
+      <h2>Waiting for a microphone</h2>
+      <p>No ESP32 has connected since the server started. Flash the firmware, point <code>SERVER_HOST</code> at this machine and power the board. It will appear here within seconds.</p>
+    </section>
+
+    <section class="grid" id="cards">
+      <article class="card">
+        <header><h2>ESP32 Device</h2><span class="pill" id="dev-pill">—</span></header>
+        <dl>
+          <dt>Device ID</dt><dd class="mono" id="dev-id">—</dd>
+          <dt>Status</dt><dd id="dev-status">—</dd>
+          <dt>IP</dt><dd class="mono" id="dev-ip">—</dd>
+          <dt>Wi-Fi</dt><dd id="dev-wifi">—</dd>
+          <dt>Firmware</dt><dd class="mono" id="dev-fw">—</dd>
+          <dt>Free heap</dt><dd class="mono" id="dev-heap">—</dd>
+          <dt>Uptime</dt><dd class="mono" id="dev-uptime">—</dd>
+          <dt>Last reset</dt><dd class="mono" id="dev-reset">—</dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <header><h2>WebSocket</h2><span class="pill" id="ws-pill">—</span></header>
+        <dl>
+          <dt>Status</dt><dd id="ws-status">—</dd>
+          <dt>Connected since</dt><dd id="ws-since">—</dd>
+          <dt>Last packet</dt><dd id="ws-last">—</dd>
+          <dt>Remote address</dt><dd class="mono" id="ws-remote">—</dd>
+          <dt id="ws-reason-label">Last disconnect</dt><dd id="ws-reason">—</dd>
+        </dl>
+      </article>
+
+      <article class="card card-audio">
+        <header><h2>Audio</h2><span class="pill" id="au-pill">—</span></header>
+        <div class="big">
+          <span class="rec-dot" id="au-dot"></span>
+          <span class="mono" id="au-duration">00:00:00</span>
+        </div>
+        <dl>
+          <dt>Recording</dt><dd id="au-recording">—</dd>
+          <dt>Stream</dt><dd id="au-stream">—</dd>
+          <dt>Sample rate</dt><dd class="mono" id="au-rate">—</dd>
+          <dt>Format</dt><dd id="au-format">—</dd>
+          <dt>Mic gain</dt><dd class="mono" id="au-gain">—</dd>
+          <dt>Current file</dt><dd class="mono wrap" id="au-file">—</dd>
+          <dt>Packets received</dt><dd class="mono" id="au-packets">0</dd>
+          <dt>Bytes received</dt><dd class="mono" id="au-bytes">0 B</dd>
+        </dl>
+        <div class="live">
+          <button type="button" class="btn primary" id="live-btn">🔊 Listen live</button>
+          <span class="muted" id="live-status"></span>
+        </div>
+        <div class="meter live-meter" aria-hidden="true"><span id="live-meter"></span></div>
+        <p class="warn" id="au-warn" hidden></p>
+      </article>
+
+      <article class="card">
+        <header><h2>Storage</h2><span class="pill neutral" id="st-pill">—</span></header>
+        <dl>
+          <dt>Recordings</dt><dd class="mono" id="st-count">—</dd>
+          <dt>Recordings size</dt><dd class="mono" id="st-size">—</dd>
+          <dt>Disk free</dt><dd class="mono" id="st-free">—</dd>
+          <dt>Last recording</dt><dd class="mono wrap" id="st-last">—</dd>
+        </dl>
+        <div class="meter" aria-hidden="true"><span id="st-meter"></span></div>
+      </article>
+    </section>
+
+    <section class="recordings">
+      <header class="section-head">
+        <h2>Recordings</h2>
+        <span class="muted" id="rec-total"></span>
+      </header>
+
+      <div class="player" id="player" hidden>
+        <div class="player-meta">
+          <span class="muted">Now playing</span>
+          <span class="mono" id="player-name"></span>
+        </div>
+        <audio id="audio" controls preload="none"></audio>
+        <button type="button" class="btn ghost" id="player-close" aria-label="Close player">✕</button>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Recording</th><th>Device</th><th>Started</th><th class="num">Duration</th><th class="num">Size</th><th class="actions"></th></tr>
+          </thead>
+          <tbody id="rec-body">
+            <tr class="placeholder"><td colspan="6">No recordings yet.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

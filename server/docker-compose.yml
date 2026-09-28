@@ -1,0 +1,27 @@
+services:
+  mic-server:
+    build: .
+    image: esp32-mic-server:1.0.0
+    container_name: esp32-mic-server
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Fixed inside the container; the host side is the volume below.
+      RECORDINGS_DIR: /app/recordings
+      HOST: 0.0.0.0
+      PORT: "8080"
+    ports:
+      # HOST_BIND limits which host address is published (e.g. only the LAN IP).
+      - "${HOST_BIND:-0.0.0.0}:${HOST_PORT:-8080}:8080"
+    volumes:
+      # Recordings live on the host and survive container rebuilds/restarts.
+      - ./recordings:/app/recordings
+    # Must be able to write ./recordings on the host (see README → Docker).
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    # Time to finalize open WAV files on `docker compose down`.
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
