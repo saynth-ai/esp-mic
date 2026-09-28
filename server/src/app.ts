@@ -358,7 +358,7 @@ function loginPage(error: boolean, limited: boolean): string {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sign in · ESP32 Mic Recorder</title>
-  <link rel="stylesheet" href="/style.css?v=1.1.1">
+  <link rel="stylesheet" href="/style.css?v=1.1.3">
 </head>
 <body class="login-body">
   <form class="login card" method="post" action="/login">

@@ -274,9 +274,10 @@ function renderRecordings() {
       play.className = 'btn primary';
       if (liveDev) {
         // Still being recorded: a file snapshot would stop at its current end, so listen live instead.
-        const on = live.wanted && live.device === liveDev.device_id;
-        play.textContent = on ? '■ Stop live' : '🔊 Live';
-        play.addEventListener('click', () => (on ? stopLive() : startLive(liveDev.device_id)));
+        const id = liveDev.device_id;
+        play.textContent = live.wanted && live.device === id ? '■ Stop live' : '🔊 Live';
+        // Decide at click time: the row may have been drawn before listening started.
+        play.addEventListener('click', () => (live.wanted && live.device === id ? stopLive() : startLive(id)));
       } else {
         play.textContent = state.playing === r.filename ? '▶ Playing' : '▶ Play';
         play.addEventListener('click', () => playRecording(r.filename, url));
@@ -494,7 +495,7 @@ function render() {
 
 const LIVE_BUFFER_S = 0.3;
 const LIVE_MAX_LAG_S = 1.0;
-const live = { ws: null, ctx: null, device: null, rate: 16000, next: 0, level: 0, wanted: false };
+const live = { ws: null, ctx: null, out: null, sources: new Set(), device: null, rate: 16000, next: 0, level: 0, wanted: false };
 
 function startLive(deviceId) {
   stopLive();
@@ -503,8 +504,13 @@ function startLive(deviceId) {
   live.device = deviceId;
   live.ctx = live.ctx || new (window.AudioContext || window.webkitAudioContext)();
   live.ctx.resume();
+  // Each listening session plays through its own gain node, so stopping can cut
+  // off everything already scheduled at once.
+  live.out = live.ctx.createGain();
+  live.out.connect(live.ctx.destination);
   openLiveSocket();
   renderLive();
+  renderRecordings();
 }
 
 function openLiveSocket() {
@@ -514,6 +520,7 @@ function openLiveSocket() {
   live.ws = ws;
   live.next = 0;
   ws.addEventListener('message', (ev) => {
+    if (live.ws !== ws) return; // late data from a socket we already closed
     if (typeof ev.data === 'string') {
       try {
         const m = JSON.parse(ev.data);
@@ -534,7 +541,7 @@ function openLiveSocket() {
 
 function playChunk(pcm) {
   const ctx = live.ctx;
-  if (!ctx || pcm.length === 0) return;
+  if (!ctx || !live.out || pcm.length === 0) return;
   const buf = ctx.createBuffer(1, pcm.length, live.rate); // the browser resamples to its own rate
   const ch = buf.getChannelData(0);
   let sum = 0;
@@ -549,7 +556,9 @@ function playChunk(pcm) {
   if (live.next < now + 0.02 || live.next > now + LIVE_MAX_LAG_S) live.next = now + LIVE_BUFFER_S;
   const src = ctx.createBufferSource();
   src.buffer = buf;
-  src.connect(ctx.destination);
+  src.connect(live.out);
+  live.sources.add(src);
+  src.onended = () => live.sources.delete(src);
   src.start(live.next);
   live.next += buf.duration;
 }
@@ -559,6 +568,22 @@ function stopLive() {
   const ws = live.ws;
   live.ws = null;
   if (ws) ws.close();
+  // Silence immediately: drop the session's output and cancel every queued chunk.
+  if (live.out) {
+    live.out.disconnect();
+    live.out = null;
+  }
+  for (const src of live.sources) {
+    try {
+      src.stop();
+    } catch {
+      /* already ended */
+    }
+  }
+  live.sources.clear();
+  live.next = 0;
+  if (live.ctx && live.ctx.state === 'running') live.ctx.suspend();
+  renderRecordings();
   live.level = 0;
   live.device = null;
   renderLive();
