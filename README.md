@@ -15,6 +15,9 @@ file and shows everything live on a web dashboard.
 - **Crash-safe WAV files.** The header is patched and fsynced every second,
   so a crash loses at most about 1 s of audio. Any leftover inconsistent
   headers are repaired at startup.
+- **ADPCM on the wire.** The ESP32 compresses audio 4:1 (IMA-ADPCM, 8 KB/s
+  instead of 32 KB/s), so it survives weak or lossy Wi-Fi; the server decodes
+  it back to 16-bit PCM before recording.
 - **Compact MP3 storage.** Finished recordings are converted to MP3 (32 kbps,
   ~14 MB/hour instead of ~115 MB/hour for WAV) in the background.
 - **Multiple microphones.** Each `device_id` gets its own files, and names are
@@ -168,20 +171,37 @@ server → {"type":"welcome","protocol":1,"device_id":"esp32-mic-001","sample_ra
           "audio_timeout_ms":3000,"max_frame_bytes":65536,"server_time":"…"}
 device → {"type":"start"}
 device → [binary: 2048 bytes = 1024 samples s16le]      ← repeated every 64 ms
+          (or, with "format":"ima_adpcm", 516-byte ADPCM blocks — see below)
 device → [binary …]
 device → {"type":"telemetry","rssi":-53,"free_heap":231544,"min_free_heap":226000,
           "uptime_s":3600,"dropped_bytes":0,"i2s_errors":0,"frames_sent":56250}   ← every 5 s
 device → {"type":"stop"}
 ```
 
+**IMA-ADPCM frames** (`"format":"ima_adpcm"`, `"frame_samples":N` in the hello, N even):
+each binary frame is one self-contained block of N samples, `4 + N/2` bytes (516 for N=1024):
+
+| bytes | content |
+|---|---|
+| 0–1 | first sample, int16 LE (verbatim) |
+| 2 | step index 0–88 at block start |
+| 3 | reserved (0) |
+| 4… | samples 1…N-1 as 4-bit IMA codes, low nibble first |
+
+Blocks decode independently, so a lost block never corrupts the next. The server
+decodes to 16-bit PCM immediately; recordings, MP3s and live listening are PCM as usual.
+`bytes_received` counts bytes on the wire. The encoder (`esp32/src/adpcm.cpp`) and the
+server decoder are tested bit-for-bit against each other.
+
 Rules the server enforces:
 
 - Binary frames are PCM and nothing else. They are never decoded as text.
   A frame must be non-empty, an even length, and ≤ `MAX_FRAME_BYTES`. Odd-sized
   frames are dropped and counted, so later samples stay aligned.
-- `hello` must come first, within `HELLO_TIMEOUT_MS`. Its `sample_rate`, `bits`,
-  `channels` and `format` must match the server, otherwise the server sends an
-  error and closes with 4003.
+- `hello` must come first, within `HELLO_TIMEOUT_MS`. Its `sample_rate`, `bits`
+  and `channels` must match the server and `format` must be `pcm_s16le` or
+  `ima_adpcm` (with a valid `frame_samples`), otherwise the server sends an error
+  and closes with 4003.
 - `device_id` must match `[A-Za-z0-9_-]{1,64}`, because it becomes part of a filename.
 - A second connection with the same `device_id` replaces the first (close 4004).
   This is what happens when a board reboots before its old TCP connection has timed out.
@@ -241,7 +261,7 @@ cd server
 npm test
 ```
 
-39 tests run the real server (HTTP, both WebSockets, real files) against
+48 tests run the real server (HTTP, both WebSockets, real files) against
 simulated devices. They cover every acceptance scenario:
 
 | # | Scenario | Test |

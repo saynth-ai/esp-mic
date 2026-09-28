@@ -43,7 +43,7 @@ export interface DeviceStatus {
   recording_duration: number;
   /** Size of the current recording file, header included. */
   recording_bytes: number;
-  /** Counters for the current connection. */
+  /** Counters for the current connection (bytes_received = bytes on the wire, compressed or not). */
   packets_received: number;
   bytes_received: number;
   invalid_frames: number;
@@ -105,8 +105,12 @@ export class DeviceSession {
   start(): void {
     this.mgr.handleStart(this);
   }
-  audio(pcm: Buffer): void {
-    this.mgr.handleAudio(this, pcm);
+  /** `pcm` is decoded 16-bit PCM; `wireBytes` is what actually crossed the network. */
+  audio(pcm: Buffer, wireBytes = pcm.length): void {
+    this.mgr.handleAudio(this, pcm, wireBytes);
+  }
+  invalidFrame(bytes: number): void {
+    this.mgr.handleInvalidFrame(this, bytes);
   }
   stop(): void {
     this.mgr.handleStop(this);
@@ -202,6 +206,7 @@ export class DeviceManager extends EventEmitter<DeviceManagerEvents> {
       remote_address: remoteAddress,
       mac: hello.mac ?? null,
       firmware: hello.firmware ?? null,
+      format: hello.format,
       reset_reason: hello.reset_reason ?? null,
       connected_since: new Date().toISOString(),
       disconnected_at: null,
@@ -226,7 +231,18 @@ export class DeviceManager extends EventEmitter<DeviceManagerEvents> {
     this.log.debug(`${session.deviceId}: start requested`);
   }
 
-  handleAudio(session: DeviceSession, pcm: Buffer): void {
+  handleInvalidFrame(session: DeviceSession, bytes: number): void {
+    const state = this.devices.get(session.deviceId);
+    if (!state || state.session !== session) return;
+    const s = state.status;
+    s.invalid_frames++;
+    if (s.invalid_frames === 1 || s.invalid_frames % 100 === 0) {
+      this.log.warn(`${s.device_id}: dropped invalid audio frame of ${bytes} bytes (${s.invalid_frames} so far)`);
+    }
+    state.dirty = true;
+  }
+
+  handleAudio(session: DeviceSession, pcm: Buffer, wireBytes = pcm.length): void {
     const state = this.devices.get(session.deviceId);
     if (!state || state.session !== session) return;
     const s = state.status;
@@ -234,16 +250,12 @@ export class DeviceManager extends EventEmitter<DeviceManagerEvents> {
 
     // Samples are 2 bytes; an odd or empty frame would misalign every later sample.
     if (pcm.length === 0 || pcm.length % 2 !== 0) {
-      s.invalid_frames++;
-      if (s.invalid_frames === 1 || s.invalid_frames % 100 === 0) {
-        this.log.warn(`${s.device_id}: dropped invalid audio frame of ${pcm.length} bytes (${s.invalid_frames} so far)`);
-      }
-      state.dirty = true;
+      this.handleInvalidFrame(session, pcm.length);
       return;
     }
 
     s.packets_received++;
-    s.bytes_received += pcm.length;
+    s.bytes_received += wireBytes;
     s.last_packet = new Date(now).toISOString();
     state.lastPacketMs = now;
     this.checkRate(state, pcm.length, now);

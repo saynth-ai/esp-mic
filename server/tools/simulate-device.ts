@@ -3,12 +3,13 @@
  * tone as 16-bit PCM in real time. Useful for testing the server without hardware.
  *
  *   npm run simulate -- --token <DEVICE_TOKEN> [--url ws://localhost:8080/audio]
- *                       [--id esp32-sim-001] [--seconds 10] [--freq 440] [--frame 1024]
+ *                       [--id esp32-sim-001] [--seconds 10] [--freq 440] [--frame 1024] [--adpcm]
  *
  * --seconds 0 streams until Ctrl+C. Ctrl+C sends {"type":"stop"} first.
  */
 import { parseArgs } from 'node:util';
 import WebSocket from 'ws';
+import { AdpcmEncoder } from '../src/adpcm.js';
 
 const { values } = parseArgs({
   options: {
@@ -19,6 +20,7 @@ const { values } = parseArgs({
     freq: { type: 'string', default: '440' },
     rate: { type: 'string', default: '16000' },
     frame: { type: 'string', default: '1024' },
+    adpcm: { type: 'boolean', default: false },
   },
 });
 
@@ -32,15 +34,16 @@ const ws = new WebSocket(values.url, { headers: { Authorization: `Bearer ${value
 let phase = 0;
 let sent = 0;
 let timer: NodeJS.Timeout | null = null;
+const encoder = values.adpcm ? new AdpcmEncoder() : null;
 
 function frame(): Buffer {
-  const buf = Buffer.alloc(frameSamples * 2);
+  const pcm = new Int16Array(frameSamples);
   for (let i = 0; i < frameSamples; i++) {
-    buf.writeInt16LE(Math.round(Math.sin(phase) * 8000), i * 2);
+    pcm[i] = Math.round(Math.sin(phase) * 8000);
     phase += (2 * Math.PI * freq) / sampleRate;
   }
   phase %= 2 * Math.PI;
-  return buf;
+  return encoder ? encoder.encode(pcm) : Buffer.from(pcm.buffer);
 }
 
 function stop(): void {
@@ -65,7 +68,8 @@ ws.on('open', () => {
       sample_rate: sampleRate,
       bits: 16,
       channels: 1,
-      format: 'pcm_s16le',
+      format: values.adpcm ? 'ima_adpcm' : 'pcm_s16le',
+      frame_samples: frameSamples,
       firmware: 'simulator',
       ip: '127.0.0.1',
       rssi: -50,

@@ -10,6 +10,7 @@
  *
  * Audio is only ever carried in binary frames; text frames are JSON control messages.
  */
+import { ADPCM_FORMAT } from './adpcm.js';
 import type { AudioFormat } from './config.js';
 
 export const PROTOCOL_VERSION = 1;
@@ -35,6 +36,8 @@ export interface HelloMessage {
   bits: number;
   channels: number;
   format: string;
+  /** Samples per binary frame; required for block codecs (ima_adpcm). */
+  frame_samples?: number;
   /** Optional device-reported details. */
   ip?: string;
   mac?: string;
@@ -98,6 +101,7 @@ export function parseControlMessage(raw: Buffer): ControlMessage {
         bits: Number(msg.bits),
         channels: Number(msg.channels),
         format: String(msg.format),
+        frame_samples: optNum(msg.frame_samples),
         ip: optStr(msg.ip, 45),
         mac: optStr(msg.mac, 17),
         firmware: optStr(msg.firmware),
@@ -133,6 +137,13 @@ export function checkHelloFormat(hello: HelloMessage, expected: AudioFormat): vo
   if (hello.sample_rate !== expected.sampleRate) problems.push(`sample_rate ${hello.sample_rate} ≠ ${expected.sampleRate}`);
   if (hello.bits !== expected.bitsPerSample) problems.push(`bits ${hello.bits} ≠ ${expected.bitsPerSample}`);
   if (hello.channels !== expected.channels) problems.push(`channels ${hello.channels} ≠ ${expected.channels}`);
-  if (hello.format !== expected.format) problems.push(`format ${hello.format} ≠ ${expected.format}`);
+  if (hello.format === ADPCM_FORMAT) {
+    const n = hello.frame_samples;
+    if (n === undefined || !Number.isInteger(n) || n < 2 || n > 16384 || n % 2 !== 0) {
+      problems.push('ima_adpcm needs an even frame_samples between 2 and 16384');
+    }
+  } else if (hello.format !== expected.format) {
+    problems.push(`format ${hello.format} ≠ ${expected.format} or ${ADPCM_FORMAT}`);
+  }
   if (problems.length) throw new ProtocolError(`unsupported audio format: ${problems.join(', ')}`, CloseCode.UnsupportedFormat);
 }

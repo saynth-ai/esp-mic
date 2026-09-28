@@ -149,7 +149,8 @@ function renderDevice() {
   $('au-dot').className = `rec-dot${d.recording ? ' on' : ''}`;
   setText('au-duration', fmtClock(d.recording_duration));
   setText('au-rate', `${d.sample_rate} Hz`);
-  setText('au-format', `PCM ${d.bits}-bit ${d.channels === 1 ? 'Mono' : `${d.channels} ch`}`);
+  const pcmFmt = `PCM ${d.bits}-bit ${d.channels === 1 ? 'Mono' : `${d.channels} ch`}`;
+  setText('au-format', d.format === 'ima_adpcm' ? `IMA-ADPCM 4:1 → ${pcmFmt}` : pcmFmt);
   setText('au-gain', d.mic_gain_db != null ? `${d.mic_gain_db > 0 ? '+' : ''}${d.mic_gain_db.toFixed(1)} dB${d.agc ? ' (AGC)' : ''}` : '—');
   setText('au-file', d.current_recording || '—');
   setText('au-packets', d.packets_received.toLocaleString());

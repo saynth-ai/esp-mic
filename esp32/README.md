@@ -63,7 +63,8 @@ Tips:
 | `MIC_DC_BLOCK` | 1 | High-pass away the mic's DC offset |
 | `AUDIO_SAMPLE_RATE` | 16000 | Must match server `SAMPLE_RATE` |
 | `AUDIO_FRAME_SAMPLES` | 1024 | Samples per WebSocket frame (64 ms) |
-| `AUDIO_BUFFER_MS` | 1000 | RAM buffer that rides out Wi-Fi hiccups |
+| `AUDIO_CODEC_ADPCM` | 1 | Compress 4:1 with IMA-ADPCM (8 KB/s on the wire). 0 = raw PCM (32 KB/s) |
+| `AUDIO_BUFFER_MS` | 10000 (ADPCM) / 3000 (PCM) | RAM buffer (~80 KB). Audio captured during a slow link or reconnect is kept and sent afterwards |
 | `SERVER_PATH` | `/audio` | Server `DEVICE_WS_PATH` |
 | `SERVER_USE_TLS` | 0 | 1 = `wss://` (needs `SERVER_ROOT_CA`) |
 | `STREAM_BUTTON_PIN` | 0 | Press to pause/resume streaming; -1 disables |
@@ -140,12 +141,13 @@ arduino-cli monitor -p /dev/ttyUSB0 -c baudrate=115200
 
 - **No heap churn in the audio path.** Ring buffer, frame buffer and I2S buffers
   are all static. JSON parsing only happens for rare server control messages.
-- **Back-pressure.** If Wi-Fi stalls, the ring buffer absorbs up to
-  `AUDIO_BUFFER_MS`. Past that, whole 16 ms chunks are dropped (never partial
-  samples) and counted in `dropped_bytes`, which the dashboard shows.
+- **Back-pressure.** If Wi-Fi stalls or the connection drops, capture continues
+  into the ring buffer (up to `AUDIO_BUFFER_MS`); after the reconnect the backlog
+  is sent first, faster than real time. Only longer outages drop audio, in whole
+  16 ms chunks (never partial samples), counted in `dropped_bytes`.
 - **Reconnect.** Wi-Fi retries after 1, 2, 5, 10, then every 30 s. The WebSocket
   retry interval grows the same way the longer the server stays unreachable.
-  On reconnect, stale buffered audio is discarded so each recording starts live.
+  On reconnect, buffered audio is sent first so short outages leave no gap.
 - **Watchdog.** Both tasks are on the ESP-IDF task watchdog (`WDT_TIMEOUT_S`).
   I2S read errors or timeouts restart the I2S driver; if it can't be restarted,
   or free heap stays low, or the server has been unreachable for

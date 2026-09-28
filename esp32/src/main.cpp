@@ -17,6 +17,7 @@
 #include <esp_task_wdt.h>
 #include <freertos/stream_buffer.h>
 
+#include "adpcm.h"
 #include "config.h"
 #include "mic_i2s.h"
 
@@ -34,8 +35,17 @@
 
 // ------------------------------------------------------------------ buffers
 
-static constexpr size_t FRAME_BYTES = AUDIO_FRAME_SAMPLES * sizeof(int16_t);
-static constexpr size_t BYTES_PER_SEC = AUDIO_SAMPLE_RATE * sizeof(int16_t);
+// One frame = AUDIO_FRAME_SAMPLES samples = one WebSocket binary message.
+static constexpr size_t PCM_FRAME_BYTES = AUDIO_FRAME_SAMPLES * sizeof(int16_t);
+#if AUDIO_CODEC_ADPCM
+static constexpr size_t FRAME_BYTES = 4 + AUDIO_FRAME_SAMPLES / 2;  // == adpcmBlockBytes()
+static constexpr const char *WIRE_FORMAT = "ima_adpcm";
+#else
+static constexpr size_t FRAME_BYTES = PCM_FRAME_BYTES;
+static constexpr const char *WIRE_FORMAT = "pcm_s16le";
+#endif
+// Bytes per second on the wire (and in the ring buffer).
+static constexpr size_t BYTES_PER_SEC = FRAME_BYTES * AUDIO_SAMPLE_RATE / AUDIO_FRAME_SAMPLES;
 static constexpr size_t RING_BYTES_RAW = BYTES_PER_SEC * AUDIO_BUFFER_MS / 1000;
 // Whole number of frames, and at least four of them.
 static constexpr size_t RING_BYTES =
@@ -43,11 +53,13 @@ static constexpr size_t RING_BYTES =
 static constexpr size_t CAPTURE_CHUNK = 256;  // samples per I2S read (16 ms)
 
 static_assert(AUDIO_FRAME_SAMPLES >= CAPTURE_CHUNK, "frame must hold at least one capture chunk");
+static_assert(AUDIO_FRAME_SAMPLES % 2 == 0, "frame must hold an even number of samples");
 static_assert(FRAME_BYTES <= 15 * 1024, "frame exceeds the WebSockets library's max payload");
 
-static uint8_t g_ringStorage[RING_BYTES + 1];
-static StaticStreamBuffer_t g_ringStruct;
+// Allocated once in setup() from the heap: a multi-second buffer is too big for
+// the static DRAM segment. Never freed, so it cannot fragment the heap.
 static StreamBufferHandle_t g_ring = nullptr;
+static size_t g_ringBytes = 0;
 // Frame buffer with headroom for the WebSocket header: sendBIN(..., headerToPayload=true)
 // then writes header + payload in one TCP write and never mallocs, whatever the frame size.
 static uint8_t g_txBuf[WEBSOCKETS_MAX_HEADER_SIZE + FRAME_BYTES];
@@ -114,6 +126,12 @@ static const char *resetReasonName() {
 static void captureTask(void *) {
   esp_task_wdt_add(nullptr);
   static int16_t pcm[CAPTURE_CHUNK];
+  static int16_t frame[AUDIO_FRAME_SAMPLES];  // one frame being assembled
+#if AUDIO_CODEC_ADPCM
+  static uint8_t encoded[FRAME_BYTES];
+  uint8_t adpcmIndex = 0;
+#endif
+  size_t fill = 0;
   uint32_t errorRun = 0;
 
   for (;;) {
@@ -139,13 +157,28 @@ static void captureTask(void *) {
     }
     errorRun = 0;
 
-    if (!g_capture) continue;  // keep the mic running (and warm) while not streaming
-    size_t bytes = (size_t)n * sizeof(int16_t);
-    // Drop whole chunks rather than partially writing one, so audio stays sample aligned.
-    if (xStreamBufferSpacesAvailable(g_ring) >= bytes) {
-      xStreamBufferSend(g_ring, pcm, bytes, 0);
-    } else {
-      g_droppedBytes = g_droppedBytes + bytes;
+    if (!g_capture) {  // keep the mic running (and warm) while not streaming
+      fill = 0;
+      continue;
+    }
+
+    // Assemble whole frames; each goes into the ring buffer as one unit (encoded if
+    // ADPCM), so the sender always reads complete frames and drops never split one.
+    for (int i = 0; i < n; i++) {
+      frame[fill++] = pcm[i];
+      if (fill < AUDIO_FRAME_SAMPLES) continue;
+      fill = 0;
+#if AUDIO_CODEC_ADPCM
+      adpcmEncodeBlock(frame, AUDIO_FRAME_SAMPLES, encoded, &adpcmIndex);
+      const void *out = encoded;
+#else
+      const void *out = frame;
+#endif
+      if (xStreamBufferSpacesAvailable(g_ring) >= FRAME_BYTES) {
+        xStreamBufferSend(g_ring, out, FRAME_BYTES, 0);
+      } else {
+        g_droppedBytes = g_droppedBytes + PCM_FRAME_BYTES;  // reported as PCM-equivalent bytes
+      }
     }
   }
 }
@@ -160,9 +193,9 @@ static void sendHello() {
   static char buf[384];
   snprintf(buf, sizeof(buf),
            "{\"type\":\"hello\",\"device_id\":\"%s\",\"sample_rate\":%d,\"bits\":16,\"channels\":1,"
-           "\"format\":\"pcm_s16le\",\"frame_samples\":%d,\"firmware\":\"%s\",\"ip\":\"%s\",\"mac\":\"%s\","
+           "\"format\":\"%s\",\"frame_samples\":%d,\"firmware\":\"%s\",\"ip\":\"%s\",\"mac\":\"%s\","
            "\"rssi\":%d,\"reset_reason\":\"%s\"}",
-           DEVICE_ID, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SAMPLES, FIRMWARE_VERSION, WiFi.localIP().toString().c_str(),
+           DEVICE_ID, AUDIO_SAMPLE_RATE, WIRE_FORMAT, AUDIO_FRAME_SAMPLES, FIRMWARE_VERSION, WiFi.localIP().toString().c_str(),
            WiFi.macAddress().c_str(), WiFi.RSSI(), resetReasonName());
   wsSendText(buf);
 }
@@ -185,12 +218,18 @@ static void drainRing() {
   }
 }
 
-static void startStreaming() {
-  g_capture = false;
-  drainRing();
+// discardBacklog: true only when resuming from a manual pause. After a network
+// drop the backlog is kept and sent first, so short outages leave no gap.
+static void startStreaming(bool discardBacklog) {
+  if (discardBacklog) {
+    g_capture = false;
+    drainRing();
+  }
+  size_t backlog = xStreamBufferBytesAvailable(g_ring);
   wsSendText("{\"type\":\"start\"}");
   g_capture = true;
-  LOG("Streaming audio");
+  if (backlog) LOG("Streaming audio (sending %u ms of buffered audio first)", (unsigned)(backlog * 1000 / BYTES_PER_SEC));
+  else LOG("Streaming audio");
 }
 
 static void stopStreaming(bool tellServer) {
@@ -198,9 +237,10 @@ static void stopStreaming(bool tellServer) {
   if (tellServer) wsSendText("{\"type\":\"stop\"}");
 }
 
+// Keeps capturing: audio recorded while the link is down waits in the ring buffer
+// (up to AUDIO_BUFFER_MS) and is sent after the reconnect.
 static void markServerDown() {
   if (g_link == Link::AwaitWelcome || g_link == Link::Streaming) g_wsDownSince = millis();
-  stopStreaming(false);
   g_link = g_wifiUp ? Link::WsConnecting : Link::WifiDown;
 }
 
@@ -215,7 +255,7 @@ static void handleServerText(const uint8_t *payload, size_t len) {
     LOG("Server accepted hello (protocol %d)", doc["protocol"] | 0);
     g_link = Link::Streaming;
     g_lastOnline = millis();
-    if (!g_userPaused) startStreaming();
+    if (!g_userPaused) startStreaming(false);
     sendTelemetry();
   } else if (strcmp(type, "error") == 0) {
     LOG("Server error: %s", doc["message"] | "?");
@@ -291,8 +331,7 @@ static void onWifiUp() {
 static void onWifiDown() {
   LOG("Wi-Fi lost");
   if (g_ws.isConnected()) g_ws.disconnect();
-  stopStreaming(false);
-  g_link = Link::WifiDown;
+  g_link = Link::WifiDown;  // capture keeps filling the buffer until Wi-Fi returns
 }
 
 // Diagnostics: the driver's reason for every failed association / drop.
@@ -434,7 +473,7 @@ static void buttonTick(uint32_t now) {
     stopStreaming(true);
   } else {
     LOG("Button: streaming resumed");
-    if (g_link == Link::Streaming) startStreaming();
+    if (g_link == Link::Streaming) startStreaming(true);
   }
 #else
   (void)now;
@@ -485,7 +524,13 @@ void setup() {
   if (esp_task_wdt_reconfigure(&wdt) != ESP_OK) esp_task_wdt_init(&wdt);
   esp_task_wdt_add(nullptr);
 
-  g_ring = xStreamBufferCreateStatic(RING_BYTES, FRAME_BYTES, g_ringStorage, &g_ringStruct);
+  // Largest buffer that fits, stepping down from AUDIO_BUFFER_MS if memory is tight.
+  for (size_t want = RING_BYTES; !g_ring && want >= 4 * FRAME_BYTES; want -= 4 * FRAME_BYTES) {
+    if (ESP.getMaxAllocHeap() < want + 8 * 1024) continue;  // keep headroom for Wi-Fi
+    g_ring = xStreamBufferCreate(want, FRAME_BYTES);
+    if (g_ring) g_ringBytes = want;
+  }
+  if (!g_ring) gracefulReboot("cannot allocate audio buffer");
 
 #if STREAM_BUTTON_PIN >= 0
   pinMode(STREAM_BUTTON_PIN, INPUT_PULLUP);
@@ -501,8 +546,9 @@ void setup() {
     delay(500);
     esp_task_wdt_reset();
   }
-  LOG("I2S ready: BCLK=%d WS=%d SD=%d, %d Hz, %s slot, buffer %u bytes, gain %s", I2S_BCLK, I2S_LRCLK, I2S_DIN,
-      AUDIO_SAMPLE_RATE, MIC_USE_RIGHT_SLOT ? "right" : "left", (unsigned)RING_BYTES, MIC_AGC ? "AGC" : "fixed");
+  LOG("I2S ready: BCLK=%d WS=%d SD=%d, %d Hz, %s slot, %s %u B/s, buffer %u ms (%u bytes), gain %s", I2S_BCLK,
+      I2S_LRCLK, I2S_DIN, AUDIO_SAMPLE_RATE, MIC_USE_RIGHT_SLOT ? "right" : "left", WIRE_FORMAT, (unsigned)BYTES_PER_SEC,
+      (unsigned)(g_ringBytes * 1000 / BYTES_PER_SEC), (unsigned)g_ringBytes, MIC_AGC ? "AGC" : "fixed");
 
   g_captureBeat = millis();
   xTaskCreatePinnedToCore(captureTask, "mic", 4096, nullptr, 5, nullptr, 1);

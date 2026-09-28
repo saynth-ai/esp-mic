@@ -78,10 +78,23 @@
 #ifndef AUDIO_FRAME_SAMPLES
 #define AUDIO_FRAME_SAMPLES 1024
 #endif
-// RAM ring buffer between the I2S task and the network. Absorbs Wi-Fi hiccups;
-// if the network stalls longer than this, the oldest-not-yet-sent audio is dropped.
+// Compress audio on the device with IMA-ADPCM (4:1): 32 KB/s of PCM becomes ~8 KB/s
+// on the wire. Much more robust on weak or lossy links; the server decodes it back to
+// 16-bit PCM, so recordings are unchanged. Slightly lossy (fine for speech). 0 = raw PCM.
+#ifndef AUDIO_CODEC_ADPCM
+#define AUDIO_CODEC_ADPCM 1
+#endif
+
+// RAM ring buffer between the I2S task and the network. Audio captured while the
+// link is slow or reconnecting waits here and is sent afterwards; only an outage
+// longer than this loses audio (the newest frames are dropped). With ADPCM the same
+// RAM holds 4x longer: 10 s ≈ 80 KB; raw PCM 3 s ≈ 94 KB.
 #ifndef AUDIO_BUFFER_MS
-#define AUDIO_BUFFER_MS 1000
+#if AUDIO_CODEC_ADPCM
+#define AUDIO_BUFFER_MS 10000
+#else
+#define AUDIO_BUFFER_MS 3000
+#endif
 #endif
 // Linear gain applied after the DC-blocking filter (fixed, or the AGC's starting
 // value). The INMP441 is quiet at unity gain; 4-8 suits speech at 0.5-2 m.

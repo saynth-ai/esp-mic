@@ -1,6 +1,7 @@
 import type { IncomingMessage, Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
+import { ADPCM_FORMAT, decodeAdpcmBlock } from './adpcm.js';
 import { isValidDeviceToken, tokenFromRequest } from './auth.js';
 import type { Config } from './config.js';
 import { isOriginAllowed, originOf } from './cors.js';
@@ -102,6 +103,8 @@ export function attachWebSockets(server: Server, deps: WebSocketDeps): WebSocket
   function onDevice(ws: WebSocket, req: IncomingMessage): void {
     const remote = remoteAddress(req, config.trustProxy);
     let session: DeviceSession | null = null;
+    /** Set for ADPCM devices: samples per block. */
+    let adpcmSamples = 0;
     let alive = true;
     const label = () => session?.deviceId ?? remote ?? 'unknown device';
 
@@ -146,7 +149,13 @@ export function attachWebSockets(server: Server, deps: WebSocketDeps): WebSocket
       // Binary frames are PCM, full stop. They are never decoded as text.
       if (isBinary) {
         if (!session) return fail(new ProtocolError('audio received before hello'));
-        session.audio(buf);
+        if (adpcmSamples) {
+          const pcm = decodeAdpcmBlock(buf, adpcmSamples);
+          if (pcm) session.audio(pcm, buf.length);
+          else session.invalidFrame(buf.length);
+        } else {
+          session.audio(buf, buf.length);
+        }
         return;
       }
 
@@ -172,6 +181,7 @@ export function attachWebSockets(server: Server, deps: WebSocketDeps): WebSocket
           return fail(err as ProtocolError);
         }
         clearTimeout(helloTimer);
+        adpcmSamples = msg.format === ADPCM_FORMAT ? msg.frame_samples! : 0;
         session = deps.devices.connect(msg, conn, remote);
         conn.send({
           type: 'welcome',
